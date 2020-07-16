@@ -153,7 +153,7 @@ public class LireRequestHandler extends RequestHandlerBase {
     public void handleRequestBody(SolrQueryRequest req, SolrQueryResponse rsp) throws Exception {
         // (1) check if the necessary parameters are here
         if (req.getParams().get("feature") != null) { // we are searching for hashes ...
-            handleHashSearch(req, rsp); // not really supported, just here for legacy.
+            handleNewHashSearch(req, rsp); // not really supported, just here for legacy.
         } else if (req.getParams().get("url") != null) { // we are searching for an image based on an URL
             handleUrlSearch(req, rsp);
         } else if (req.getParams().get("id") != null) { // we are searching for an image based on an URL
@@ -165,7 +165,10 @@ public class LireRequestHandler extends RequestHandlerBase {
         } else if (req.getParams().get("analyze") != null) { // we are trying to extract from an image file.
             handleExtractFile(req, rsp);
         } else { // lets return random results.
-            handleUploadSearch(req, rsp);
+            if (req.getHttpMethod().equalsIgnoreCase("post"))
+                handleUploadSearch(req, rsp);
+            else
+                handleRandomSearch(req, rsp);
         }
     }
 
@@ -482,6 +485,54 @@ public class LireRequestHandler extends RequestHandlerBase {
                 // Re-generating the hashes to save space (instead of storing them in the index)
                 HashTermStatistics.addToStatistics(req.getSearcher(), paramField);
                 hashes = BitSampling.generateHashes(feat.getFeatureVector());
+                query = createQuery(hashes, paramField, numberOfQueryTerms);
+            } else if (MetricSpaces.supportsFeature(feat)) {
+                // ----< Metric Spaces >-----
+                int queryLength = (int) StatsUtils.clamp(numberOfQueryTerms * MetricSpaces.getPostingListLength(feat), 3, MetricSpaces.getPostingListLength(feat));
+                String msQuery = MetricSpaces.generateBoostedQuery(feat, queryLength);
+                QueryParser qp = new QueryParser(paramField.replace("_ha", "_ms"), new WhitespaceAnalyzer());
+                query = qp.parse(msQuery);
+            } else {
+                rsp.add("Error", "Feature not supported by MetricSpaces: " + feat.getClass().getSimpleName());
+                query = new MatchAllDocsQuery();
+            }
+
+        } catch (Exception e) {
+            rsp.add("Error", "Error reading image" + e.getMessage());
+            e.printStackTrace();
+        }
+        // search if the feature has been extracted and query is there.
+        if (feat != null && query != null) {
+            doSearch(req, rsp, req.getSearcher(), paramField, paramRows, getFilterQueries(req), query, feat);
+        }
+    }
+
+    private void handleNewHashSearch(SolrQueryRequest req, SolrQueryResponse rsp) throws IOException, InstantiationException, IllegalAccessException {
+        SolrParams params = req.getParams();
+        String paramField = req.getParams().get("field", "cl_ha");
+        if (!paramField.endsWith("_ha")) paramField += "_ha";
+        int paramRows = params.getInt("rows", defaultNumberOfResults);
+        numberOfQueryTerms = req.getParams().getInt("accuracy", DEFAULT_ID_OF_QUERY_TERMS);
+        numberOfCandidateResults = req.getParams().getInt("candidates", DEFAULT_NUMBER_OF_CANDIDATES);
+        useMetricSpaces = req.getParams().getBool("ms", DEFAULT_USE_METRIC_SPACES);
+
+        GlobalFeature feat = null;
+        Query query = null;
+        // wrapping the whole part in the try
+        try {
+            byte[] featureVector = Base64.decodeBase64(params.get("feature"));
+            // getting the right feature per field:
+            if (FeatureRegistry.getClassForHashField(paramField) == null) // if the feature is not registered.
+                feat = new ColorLayout();
+            else {
+                feat = (GlobalFeature) FeatureRegistry.getClassForHashField(paramField).newInstance();
+            }
+            feat.setByteArrayRepresentation(featureVector);
+
+            if (!useMetricSpaces) {
+                // Re-generating the hashes to save space (instead of storing them in the index)
+                HashTermStatistics.addToStatistics(req.getSearcher(), paramField);
+                int[] hashes = BitSampling.generateHashes(feat.getFeatureVector());
                 query = createQuery(hashes, paramField, numberOfQueryTerms);
             } else if (MetricSpaces.supportsFeature(feat)) {
                 // ----< Metric Spaces >-----

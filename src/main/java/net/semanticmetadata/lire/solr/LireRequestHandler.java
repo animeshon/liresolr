@@ -53,6 +53,7 @@ import java.util.TreeSet;
 
 import javax.imageio.ImageIO;
 
+import com.twelvemonkeys.io.enc.Base64Encoder;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.document.Document;
@@ -509,12 +510,12 @@ public class LireRequestHandler extends RequestHandlerBase {
 
     private void handleNewHashSearch(SolrQueryRequest req, SolrQueryResponse rsp) throws IOException, InstantiationException, IllegalAccessException {
         SolrParams params = req.getParams();
-        String paramField = req.getParams().get("field", "cl_ha");
+        String paramField = params.get("field", "cl_ha");
         if (!paramField.endsWith("_ha")) paramField += "_ha";
         int paramRows = params.getInt("rows", defaultNumberOfResults);
-        numberOfQueryTerms = req.getParams().getInt("accuracy", DEFAULT_ID_OF_QUERY_TERMS);
-        numberOfCandidateResults = req.getParams().getInt("candidates", DEFAULT_NUMBER_OF_CANDIDATES);
-        useMetricSpaces = req.getParams().getBool("ms", DEFAULT_USE_METRIC_SPACES);
+        numberOfQueryTerms = params.getInt("accuracy", DEFAULT_ID_OF_QUERY_TERMS);
+        numberOfCandidateResults = params.getInt("candidates", DEFAULT_NUMBER_OF_CANDIDATES);
+        useMetricSpaces = params.getBool("ms", DEFAULT_USE_METRIC_SPACES);
 
         GlobalFeature feat = null;
         Query query = null;
@@ -528,23 +529,10 @@ public class LireRequestHandler extends RequestHandlerBase {
                 feat = (GlobalFeature) FeatureRegistry.getClassForHashField(paramField).newInstance();
             }
             feat.setByteArrayRepresentation(featureVector);
-
-            if (!useMetricSpaces) {
-                // Re-generating the hashes to save space (instead of storing them in the index)
-                HashTermStatistics.addToStatistics(req.getSearcher(), paramField);
-                int[] hashes = BitSampling.generateHashes(feat.getFeatureVector());
-                query = createQuery(hashes, paramField, numberOfQueryTerms);
-            } else if (MetricSpaces.supportsFeature(feat)) {
-                // ----< Metric Spaces >-----
-                int queryLength = (int) StatsUtils.clamp(numberOfQueryTerms * MetricSpaces.getPostingListLength(feat), 3, MetricSpaces.getPostingListLength(feat));
-                String msQuery = MetricSpaces.generateBoostedQuery(feat, queryLength);
-                QueryParser qp = new QueryParser(paramField.replace("_ha", "_ms"), new WhitespaceAnalyzer());
-                query = qp.parse(msQuery);
-            } else {
-                rsp.add("Error", "Feature not supported by MetricSpaces: " + feat.getClass().getSimpleName());
-                query = new MatchAllDocsQuery();
-            }
-
+            // Re-generating the hashes to save space (instead of storing them in the index)
+            HashTermStatistics.addToStatistics(req.getSearcher(), paramField);
+            int[] hashes = BitSampling.generateHashes(feat.getFeatureVector());
+            query = createQuery(hashes, paramField, numberOfQueryTerms);
         } catch (Exception e) {
             rsp.add("Error", "Error reading image" + e.getMessage());
             e.printStackTrace();
